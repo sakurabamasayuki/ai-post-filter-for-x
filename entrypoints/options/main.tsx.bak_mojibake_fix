@@ -1,0 +1,18 @@
+﻿// entrypoints/options/main.tsx
+import React from "react";
+import { createRoot } from "react-dom/client";
+import App from "./App";
+import "../../src/styles/global.css";  // 竊・s 繧貞､悶☆
+
+const rootElement = document.getElementById("root");
+
+if (!rootElement) {
+  throw new Error("root element not found");
+}
+
+createRoot(rootElement).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+

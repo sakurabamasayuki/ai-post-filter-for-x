@@ -1,0 +1,805 @@
+export type AccountSignalSeverity = 'low' | 'medium' | 'high';
+export type AccountSignalConfidence = 'low' | 'medium' | 'high';
+
+export interface AccountSignalInput {
+  handle?: string;
+  displayName?: string;
+  bio?: string;
+
+  followerCount?: number;
+  followingCount?: number;
+  accountCreatedAt?: Date | string | null;
+  postsPerDay?: number;
+  hasVerifiedBadge?: boolean;
+
+  recentWindowDays?: number;
+  recentPostCount?: number;
+  recentOriginalPostCount?: number;
+  recentReplyCount?: number;
+  recentRepostCount?: number;
+  recentReplyWithQuoteCount?: number;
+
+  recentPostTextSample?: string;
+  targetPostTextSample?: string;
+
+  isReply?: boolean;
+  isRepost?: boolean;
+}
+
+export interface AccountSignalReason {
+  signal: string;
+  severity: AccountSignalSeverity;
+}
+
+export interface AccountSignalResult {
+  score: number;
+  reasons: AccountSignalReason[];
+  confidence: AccountSignalConfidence;
+}
+
+export interface ProfileImageAiAnalysis {
+  score: number;
+  provider?: string;
+  reason?: string;
+}
+
+export interface ProfileImageAiDetector {
+  detect(profileImageUrl: string): Promise<ProfileImageAiAnalysis> | ProfileImageAiAnalysis;
+}
+
+export interface AnalyzeAccountSignalsOptions {
+  referenceDate?: Date;
+}
+
+interface SignalEvaluation {
+  available: boolean;
+  score: number;
+  severity?: AccountSignalSeverity;
+  signal?: string;
+  weight: number;
+}
+
+const SIGNAL_WEIGHTS = {
+  handlePattern: 0.06,
+  youngHighFreq: 0.05,
+  followRatioImbalance: 0.06,
+  bioTemplateOrEmpty: 0.04,
+  displayNameSuspicious: 0.03,
+  extremePosting: 0.04,
+
+  replyRatioExtreme: 0.16,
+  heavyRecentReplies: 0.15,
+  replyWithQuoteRatio: 0.22,
+
+  originalPostScarcity: 0.06,
+  recentActivityDensity: 0.03,
+
+  profileReplyLanguageMismatch: 0.08,
+  targetReplyLanguageMismatch: 0.12,
+} as const;
+
+const BIO_TEMPLATE_PATTERNS: readonly RegExp[] = [
+  /^ai enthusiast$/i,
+  /^crypto trader$/i,
+  /^crypto investor$/i,
+  /^nft collector$/i,
+  /^web3 builder$/i,
+  /^blockchain enthusiast$/i,
+  /^marketing expert$/i,
+  /^digital marketer$/i,
+  /^investor$/i,
+  /^entrepreneur$/i,
+  /^dm for promo$/i,
+  /^follow me for alpha$/i,
+  /^副業$/i,
+  /^投資家$/i,
+  /^起業家$/i,
+  /^マーケター$/i,
+  /^dmください$/i,
+  /^案件相談$/i,
+  /^フォロー歓迎$/i,
+];
+
+const EMOJI_ONLY_RE = /^[\p{Extended_Pictographic}\p{Emoji_Presentation}\s]+$/u;
+const LETTER_OR_NUMBER_RE = /[\p{Letter}\p{Number}]/gu;
+const JAPANESE_OR_LATIN_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}A-Za-z]/u;
+const SYMBOL_CHAR_RE = /[^\p{Letter}\p{Number}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\s]/gu;
+
+type LangBucket = 'ja' | 'non-ja' | 'mixed' | 'unknown';
+
+function clamp01(value: number): number {
+  if (Number.isNaN(value)) return 0;
+  if (value <= 0) return 0;
+  if (value >= 1) return 1;
+  return value;
+}
+
+function round3(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
+function normalize(value: string | undefined): string {
+  return (value ?? '').trim().replace(/\s+/g, ' ');
+}
+
+function safeRatio(a?: number, b?: number): number {
+  if (typeof a !== 'number' || typeof b !== 'number' || b <= 0) return 0;
+  return a / b;
+}
+
+function daysBetween(from: Date, to: Date): number {
+  const diff = to.getTime() - from.getTime();
+  return diff / (1000 * 60 * 60 * 24);
+}
+
+function parseAccountCreatedAt(value?: Date | string | null): Date | undefined {
+  if (!value) return undefined;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? undefined : value;
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+function severityFromScore(score: number): AccountSignalSeverity {
+  if (score >= 0.75) return 'high';
+  if (score >= 0.4) return 'medium';
+  return 'low';
+}
+
+function countKanaChars(text: string): number {
+  const matches = text.match(/[ぁ-ゔァ-ヴー]/g);
+  return matches ? matches.length : 0;
+}
+
+function countHanChars(text: string): number {
+  const matches = text.match(/[一-龯々〆〤]/g);
+  return matches ? matches.length : 0;
+}
+
+function countLatinChars(text: string): number {
+  const matches = text.match(/[A-Za-z]/g);
+  return matches ? matches.length : 0;
+}
+
+function normalizeForLang(text?: string | null): string {
+  return (text ?? '')
+    .replace(/https?:\/\/\S+/g, ' ')
+    .replace(/@\w+/g, ' ')
+    .replace(/#\S+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function detectLangBucket(text?: string | null): LangBucket {
+  const s = normalizeForLang(text);
+  if (!s) return 'unknown';
+
+  const kana = countKanaChars(s);
+  const han = countHanChars(s);
+  const latin = countLatinChars(s);
+
+  if (kana === 0 && han === 0 && latin === 0) return 'unknown';
+
+  const jpStrong = kana >= 2 || (kana >= 1 && kana + han >= 6);
+  const nonJaStrong = latin >= 10 && kana === 0;
+
+  if (jpStrong && latin >= 8) return 'mixed';
+  if (jpStrong) return 'ja';
+
+  if (nonJaStrong && han === 0) return 'non-ja';
+
+  if (latin > 0 && (kana > 0 || han > 0)) return 'mixed';
+
+  // 漢字だけは中国語等と区別しづらいので unknown に寄せる
+  if (han > 0 && kana === 0 && latin === 0) return 'unknown';
+
+  if (latin > 0) return 'non-ja';
+  return 'unknown';
+}
+
+function buildProfileLangSample(input: AccountSignalInput): string {
+  return [input.displayName, input.bio].filter(Boolean).join(' ');
+}
+
+function evaluateHandlePattern(handle?: string): SignalEvaluation {
+  const normalized = normalize(handle).replace(/^@+/, '').toLowerCase();
+
+  if (!normalized) {
+    return { available: false, score: 0, weight: SIGNAL_WEIGHTS.handlePattern };
+  }
+
+  let suspicion = 0;
+  let signal = '';
+
+  if (/\d{6,}$/.test(normalized)) {
+    suspicion = 0.95;
+    signal = 'handle-sequential-digits';
+  } else if (/^(?:user|name|account|bot|info|news)[_-]?[a-z0-9]{4,}$/i.test(normalized)) {
+    suspicion = 0.85;
+    signal = 'handle-generic-random-format';
+  } else if (
+    normalized.length >= 10 &&
+    /[_-]/.test(normalized) &&
+    /[a-z]/.test(normalized) &&
+    /\d/.test(normalized)
+  ) {
+    suspicion = 0.7;
+    signal = 'handle-randomish-mixed-format';
+  } else if (
+    normalized.length >= 12 &&
+    (normalized.match(/\d/g)?.length ?? 0) >= 4 &&
+    /^[a-z0-9_]+$/i.test(normalized)
+  ) {
+    suspicion = 0.55;
+    signal = 'handle-long-randomish';
+  }
+
+  if (suspicion === 0) {
+    return { available: true, score: 0, weight: SIGNAL_WEIGHTS.handlePattern };
+  }
+
+  return {
+    available: true,
+    score: suspicion,
+    severity: severityFromScore(suspicion),
+    signal,
+    weight: SIGNAL_WEIGHTS.handlePattern,
+  };
+}
+
+function evaluateYoungHighFreq(
+  accountCreatedAt: Date | undefined,
+  postsPerDay: number | undefined,
+  referenceDate: Date,
+): SignalEvaluation {
+  if (!accountCreatedAt || postsPerDay === undefined) {
+    return { available: false, score: 0, weight: SIGNAL_WEIGHTS.youngHighFreq };
+  }
+
+  const ageDays = daysBetween(accountCreatedAt, referenceDate);
+
+  if (!Number.isFinite(ageDays) || ageDays < 0) {
+    return { available: false, score: 0, weight: SIGNAL_WEIGHTS.youngHighFreq };
+  }
+
+  if (ageDays >= 30 || postsPerDay <= 50) {
+    return { available: true, score: 0, weight: SIGNAL_WEIGHTS.youngHighFreq };
+  }
+
+  const ageFactor = clamp01((30 - ageDays) / 30);
+  const freqFactor = clamp01((postsPerDay - 50) / 100);
+  const suspicion = clamp01(0.55 + ageFactor * 0.2 + freqFactor * 0.25);
+
+  return {
+    available: true,
+    score: suspicion,
+    severity: severityFromScore(suspicion),
+    signal: 'young-account-high-post-frequency',
+    weight: SIGNAL_WEIGHTS.youngHighFreq,
+  };
+}
+
+function evaluateFollowRatioImbalance(
+  followerCount: number | undefined,
+  followingCount: number | undefined,
+): SignalEvaluation {
+  if (followerCount === undefined || followingCount === undefined) {
+    return { available: false, score: 0, weight: SIGNAL_WEIGHTS.followRatioImbalance };
+  }
+
+  if (followingCount < 0 || followerCount < 0) {
+    return { available: false, score: 0, weight: SIGNAL_WEIGHTS.followRatioImbalance };
+  }
+
+  if (followerCount === 0) {
+    if (followingCount >= 50) {
+      return {
+        available: true,
+        score: 1,
+        severity: 'high',
+        signal: 'follow-ratio-extreme-zero-followers',
+        weight: SIGNAL_WEIGHTS.followRatioImbalance,
+      };
+    }
+    return { available: true, score: 0, weight: SIGNAL_WEIGHTS.followRatioImbalance };
+  }
+
+  const ratio = followingCount / followerCount;
+
+  if (ratio <= 10) {
+    return { available: true, score: 0, weight: SIGNAL_WEIGHTS.followRatioImbalance };
+  }
+
+  const suspicion = clamp01(0.45 + (ratio - 10) / 20);
+
+  return {
+    available: true,
+    score: suspicion,
+    severity: severityFromScore(suspicion),
+    signal: 'follow-ratio-imbalanced',
+    weight: SIGNAL_WEIGHTS.followRatioImbalance,
+  };
+}
+
+function evaluateBioTemplateOrEmpty(bio?: string): SignalEvaluation {
+  if (bio === undefined) {
+    return { available: false, score: 0, weight: SIGNAL_WEIGHTS.bioTemplateOrEmpty };
+  }
+
+  const normalized = normalize(bio);
+
+  if (!normalized) {
+    return {
+      available: true,
+      score: 0.9,
+      severity: 'high',
+      signal: 'bio-empty',
+      weight: SIGNAL_WEIGHTS.bioTemplateOrEmpty,
+    };
+  }
+
+  const lower = normalized.toLowerCase();
+
+  if (BIO_TEMPLATE_PATTERNS.some((pattern) => pattern.test(lower))) {
+    return {
+      available: true,
+      score: 0.75,
+      severity: 'high',
+      signal: 'bio-template-only',
+      weight: SIGNAL_WEIGHTS.bioTemplateOrEmpty,
+    };
+  }
+
+  if (normalized.length <= 24 && /^[A-Za-z\s]+$/.test(normalized)) {
+    return {
+      available: true,
+      score: 0.45,
+      severity: 'medium',
+      signal: 'bio-generic-short-english',
+      weight: SIGNAL_WEIGHTS.bioTemplateOrEmpty,
+    };
+  }
+
+  return { available: true, score: 0, weight: SIGNAL_WEIGHTS.bioTemplateOrEmpty };
+}
+
+function evaluateDisplayNameSuspicious(displayName?: string): SignalEvaluation {
+  const normalized = normalize(displayName);
+
+  if (!normalized) {
+    return { available: false, score: 0, weight: SIGNAL_WEIGHTS.displayNameSuspicious };
+  }
+
+  if (EMOJI_ONLY_RE.test(normalized)) {
+    return {
+      available: true,
+      score: 0.95,
+      severity: 'high',
+      signal: 'display-name-emoji-only',
+      weight: SIGNAL_WEIGHTS.displayNameSuspicious,
+    };
+  }
+
+  const symbolMatches = normalized.match(SYMBOL_CHAR_RE) ?? [];
+  const alnumMatches = normalized.match(LETTER_OR_NUMBER_RE) ?? [];
+  const symbolRatio = normalized.length > 0 ? symbolMatches.length / normalized.length : 0;
+
+  if (!JAPANESE_OR_LATIN_RE.test(normalized) && symbolMatches.length >= 3) {
+    return {
+      available: true,
+      score: 0.8,
+      severity: 'high',
+      signal: 'display-name-symbol-only',
+      weight: SIGNAL_WEIGHTS.displayNameSuspicious,
+    };
+  }
+
+  if (symbolRatio >= 0.35 && alnumMatches.length <= 3) {
+    return {
+      available: true,
+      score: 0.6,
+      severity: 'medium',
+      signal: 'display-name-symbol-heavy',
+      weight: SIGNAL_WEIGHTS.displayNameSuspicious,
+    };
+  }
+
+  return { available: true, score: 0, weight: SIGNAL_WEIGHTS.displayNameSuspicious };
+}
+
+function evaluateExtremePosting(postsPerDay: number | undefined): SignalEvaluation {
+  if (postsPerDay === undefined) {
+    return { available: false, score: 0, weight: SIGNAL_WEIGHTS.extremePosting };
+  }
+
+  if (postsPerDay <= 100) {
+    return { available: true, score: 0, weight: SIGNAL_WEIGHTS.extremePosting };
+  }
+
+  const suspicion = clamp01(0.65 + (postsPerDay - 100) / 150);
+
+  return {
+    available: true,
+    score: suspicion,
+    severity: severityFromScore(suspicion),
+    signal: 'extreme-post-frequency',
+    weight: SIGNAL_WEIGHTS.extremePosting,
+  };
+}
+
+function evaluateReplyRatioExtreme(
+  recentPostCount: number | undefined,
+  recentReplyCount: number | undefined,
+): SignalEvaluation {
+  if (
+    recentPostCount === undefined ||
+    recentReplyCount === undefined ||
+    recentPostCount <= 0
+  ) {
+    return { available: false, score: 0, weight: SIGNAL_WEIGHTS.replyRatioExtreme };
+  }
+
+  if (recentPostCount < 5) {
+    return { available: true, score: 0, weight: SIGNAL_WEIGHTS.replyRatioExtreme };
+  }
+
+  const ratio = safeRatio(recentReplyCount, recentPostCount);
+
+  if (ratio < 0.5) {
+    return { available: true, score: 0, weight: SIGNAL_WEIGHTS.replyRatioExtreme };
+  }
+
+  let score = 0.4;
+  if (ratio >= 0.65) score = 0.7;
+  if (ratio >= 0.8) score = 0.9;
+  if (ratio >= 0.9) score = 1.0;
+
+  return {
+    available: true,
+    score,
+    severity: severityFromScore(score),
+    signal: 'reply-ratio-high',
+    weight: SIGNAL_WEIGHTS.replyRatioExtreme,
+  };
+}
+
+function evaluateHeavyRecentReplies(
+  recentReplyCount: number | undefined,
+  recentWindowDays: number | undefined,
+): SignalEvaluation {
+  if (recentReplyCount === undefined || recentWindowDays === undefined || recentWindowDays <= 0) {
+    return { available: false, score: 0, weight: SIGNAL_WEIGHTS.heavyRecentReplies };
+  }
+
+  if (recentReplyCount < 6) {
+    return { available: true, score: 0, weight: SIGNAL_WEIGHTS.heavyRecentReplies };
+  }
+
+  const perDay = recentReplyCount / recentWindowDays;
+
+  let score = 0;
+  if (perDay >= 1.0) score = 0.35;
+  if (perDay >= 2.0) score = 0.6;
+  if (perDay >= 3.5) score = 0.85;
+  if (perDay >= 5.0) score = 1.0;
+
+  return {
+    available: true,
+    score,
+    severity: score > 0 ? severityFromScore(score) : undefined,
+    signal: score > 0 ? 'recent-replies-heavy' : undefined,
+    weight: SIGNAL_WEIGHTS.heavyRecentReplies,
+  };
+}
+
+function evaluateReplyWithQuoteRatio(
+  recentPostCount: number | undefined,
+  recentReplyWithQuoteCount: number | undefined,
+): SignalEvaluation {
+  if (
+    recentPostCount === undefined ||
+    recentReplyWithQuoteCount === undefined ||
+    recentPostCount <= 0
+  ) {
+    return {
+      available: false,
+      score: 0,
+      weight: SIGNAL_WEIGHTS.replyWithQuoteRatio,
+    };
+  }
+
+  if (recentPostCount < 4) {
+    return {
+      available: true,
+      score: 0,
+      weight: SIGNAL_WEIGHTS.replyWithQuoteRatio,
+    };
+  }
+
+  const ratio = safeRatio(recentReplyWithQuoteCount, recentPostCount);
+
+  if (ratio < 0.15) {
+    return {
+      available: true,
+      score: 0,
+      weight: SIGNAL_WEIGHTS.replyWithQuoteRatio,
+    };
+  }
+
+  let score = 0.55;
+  if (ratio >= 0.25) score = 0.72;
+  if (ratio >= 0.4) score = 0.88;
+  if (ratio >= 0.55) score = 1.0;
+
+  return {
+    available: true,
+    score,
+    severity: severityFromScore(score),
+    signal: 'reply-with-quote-high',
+    weight: SIGNAL_WEIGHTS.replyWithQuoteRatio,
+  };
+}
+
+function evaluateOriginalPostScarcity(
+  recentPostCount: number | undefined,
+  recentOriginalPostCount: number | undefined,
+): SignalEvaluation {
+  if (
+    recentPostCount === undefined ||
+    recentOriginalPostCount === undefined ||
+    recentPostCount <= 0
+  ) {
+    return { available: false, score: 0, weight: SIGNAL_WEIGHTS.originalPostScarcity };
+  }
+
+  if (recentPostCount < 7) {
+    return { available: true, score: 0, weight: SIGNAL_WEIGHTS.originalPostScarcity };
+  }
+
+  const ratio = safeRatio(recentOriginalPostCount, recentPostCount);
+
+  if (ratio >= 0.4) {
+    return { available: true, score: 0, weight: SIGNAL_WEIGHTS.originalPostScarcity };
+  }
+
+  const suspicion = clamp01(0.4 + ((0.4 - ratio) / 0.4) * 0.5);
+
+  return {
+    available: true,
+    score: suspicion,
+    severity: severityFromScore(suspicion),
+    signal: 'original-post-scarce',
+    weight: SIGNAL_WEIGHTS.originalPostScarcity,
+  };
+}
+
+function evaluateRecentActivityDensity(
+  recentPostCount: number | undefined,
+  recentWindowDays: number | undefined,
+): SignalEvaluation {
+  if (
+    recentPostCount === undefined ||
+    recentWindowDays === undefined ||
+    recentWindowDays <= 0
+  ) {
+    return { available: false, score: 0, weight: SIGNAL_WEIGHTS.recentActivityDensity };
+  }
+
+  const perDay = recentPostCount / recentWindowDays;
+
+  if (perDay <= 25) {
+    return { available: true, score: 0, weight: SIGNAL_WEIGHTS.recentActivityDensity };
+  }
+
+  const suspicion = clamp01(0.35 + (perDay - 25) / 75);
+
+  return {
+    available: true,
+    score: suspicion,
+    severity: severityFromScore(suspicion),
+    signal: 'recent-activity-density-high',
+    weight: SIGNAL_WEIGHTS.recentActivityDensity,
+  };
+}
+
+function evaluateProfileReplyLanguageMismatch(input: AccountSignalInput): SignalEvaluation {
+  if (!input.isReply) {
+    return {
+      available: false,
+      score: 0,
+      weight: SIGNAL_WEIGHTS.profileReplyLanguageMismatch,
+    };
+  }
+
+  const profileSample = buildProfileLangSample(input);
+  const replySample = input.recentPostTextSample ?? '';
+
+  const profileLang = detectLangBucket(profileSample);
+  const replyLang = detectLangBucket(replySample);
+
+  if (profileLang === 'unknown' || replyLang === 'unknown') {
+    return {
+      available: false,
+      score: 0,
+      weight: SIGNAL_WEIGHTS.profileReplyLanguageMismatch,
+    };
+  }
+
+  if (profileLang === 'non-ja' && replyLang === 'ja') {
+    const score = 0.92;
+    return {
+      available: true,
+      score,
+      severity: severityFromScore(score),
+      signal: 'profile-non-ja-reply-ja',
+      weight: SIGNAL_WEIGHTS.profileReplyLanguageMismatch,
+    };
+  }
+
+  if (profileLang === 'ja' && replyLang === 'non-ja') {
+    const score = 0.55;
+    return {
+      available: true,
+      score,
+      severity: severityFromScore(score),
+      signal: 'profile-ja-reply-non-ja',
+      weight: SIGNAL_WEIGHTS.profileReplyLanguageMismatch,
+    };
+  }
+
+  if (profileLang === 'mixed' && replyLang === 'ja') {
+    const score = 0.35;
+    return {
+      available: true,
+      score,
+      severity: severityFromScore(score),
+      signal: 'profile-mixed-reply-ja',
+      weight: SIGNAL_WEIGHTS.profileReplyLanguageMismatch,
+    };
+  }
+
+  return {
+    available: true,
+    score: 0,
+    weight: SIGNAL_WEIGHTS.profileReplyLanguageMismatch,
+  };
+}
+
+function evaluateTargetReplyLanguageMismatch(input: AccountSignalInput): SignalEvaluation {
+  if (!input.isReply) {
+    return {
+      available: false,
+      score: 0,
+      weight: SIGNAL_WEIGHTS.targetReplyLanguageMismatch,
+    };
+  }
+
+  const targetLang = detectLangBucket(input.targetPostTextSample);
+  const replyLang = detectLangBucket(input.recentPostTextSample);
+
+  if (targetLang === 'unknown' || replyLang === 'unknown') {
+    return {
+      available: false,
+      score: 0,
+      weight: SIGNAL_WEIGHTS.targetReplyLanguageMismatch,
+    };
+  }
+
+  if (targetLang === 'ja' && replyLang === 'non-ja') {
+    const score = 0.98;
+    return {
+      available: true,
+      score,
+      severity: severityFromScore(score),
+      signal: 'target-ja-reply-non-ja',
+      weight: SIGNAL_WEIGHTS.targetReplyLanguageMismatch,
+    };
+  }
+
+  if (targetLang === 'non-ja' && replyLang === 'ja') {
+    const score = 0.82;
+    return {
+      available: true,
+      score,
+      severity: severityFromScore(score),
+      signal: 'target-non-ja-reply-ja',
+      weight: SIGNAL_WEIGHTS.targetReplyLanguageMismatch,
+    };
+  }
+
+  if (targetLang === 'ja' && replyLang === 'mixed') {
+    const score = 0.45;
+    return {
+      available: true,
+      score,
+      severity: severityFromScore(score),
+      signal: 'target-ja-reply-mixed',
+      weight: SIGNAL_WEIGHTS.targetReplyLanguageMismatch,
+    };
+  }
+
+  return {
+    available: true,
+    score: 0,
+    weight: SIGNAL_WEIGHTS.targetReplyLanguageMismatch,
+  };
+}
+
+function determineConfidence(
+  score: number,
+  reasons: AccountSignalReason[],
+  availableWeight: number,
+): AccountSignalConfidence {
+  const highCount = reasons.filter((reason) => reason.severity === 'high').length;
+
+  if (availableWeight < 0.2) return 'low';
+  if (score >= 0.75 && (highCount >= 2 || reasons.length >= 3)) return 'high';
+  if (score >= 0.4 || reasons.length >= 2 || availableWeight >= 0.5) return 'medium';
+  return 'low';
+}
+
+export default function analyzeAccountSignals(
+  input: AccountSignalInput,
+  options: AnalyzeAccountSignalsOptions = {},
+): AccountSignalResult {
+  const referenceDate = options.referenceDate ?? new Date();
+  const createdAt = parseAccountCreatedAt(input.accountCreatedAt);
+
+  const evaluations: SignalEvaluation[] = [
+    evaluateHandlePattern(input.handle),
+    evaluateYoungHighFreq(createdAt, input.postsPerDay, referenceDate),
+    evaluateFollowRatioImbalance(input.followerCount, input.followingCount),
+    evaluateBioTemplateOrEmpty(input.bio),
+    evaluateDisplayNameSuspicious(input.displayName),
+    evaluateExtremePosting(input.postsPerDay),
+
+    evaluateReplyRatioExtreme(input.recentPostCount, input.recentReplyCount),
+    evaluateHeavyRecentReplies(input.recentReplyCount, input.recentWindowDays),
+    evaluateReplyWithQuoteRatio(input.recentPostCount, input.recentReplyWithQuoteCount),
+
+    evaluateOriginalPostScarcity(input.recentPostCount, input.recentOriginalPostCount),
+    evaluateRecentActivityDensity(input.recentPostCount, input.recentWindowDays),
+
+    evaluateProfileReplyLanguageMismatch(input),
+    evaluateTargetReplyLanguageMismatch(input),
+  ];
+
+  let weightedScoreSum = 0;
+  let availableWeightSum = 0;
+
+  const reasons: Array<AccountSignalReason & { score: number }> = [];
+
+  for (const evaluation of evaluations) {
+    if (!evaluation.available) continue;
+
+    availableWeightSum += evaluation.weight;
+    weightedScoreSum += evaluation.score * evaluation.weight;
+
+    if (evaluation.score > 0 && evaluation.signal && evaluation.severity) {
+      reasons.push({
+        signal: evaluation.signal,
+        severity: evaluation.severity,
+        score: evaluation.score,
+      });
+    }
+  }
+
+  reasons.sort((a, b) => b.score - a.score);
+
+  if (availableWeightSum === 0) {
+    return { score: 0.5, reasons: [], confidence: 'low' };
+  }
+
+  const normalizedScore = round3(clamp01(weightedScoreSum / availableWeightSum));
+  const publicReasons: AccountSignalReason[] = reasons.map(({ signal, severity }) => ({
+    signal,
+    severity,
+  }));
+
+  return {
+    score: normalizedScore,
+    reasons: publicReasons,
+    confidence: determineConfidence(normalizedScore, publicReasons, availableWeightSum),
+  };
+}

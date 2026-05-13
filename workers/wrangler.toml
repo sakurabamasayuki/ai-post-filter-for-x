@@ -1,0 +1,35 @@
+name = "ai-post-filter-api-v2"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+workers_dev = true
+compatibility_flags = ["nodejs_compat"]
+
+# KV Namespaces (wrangler kv:namespace create 縺ｧ菴懈・蠕後！D 繧定ｲｼ繧贋ｻ倥￠)
+[[kv_namespaces]]
+binding = "DETECTION_CACHE"
+id = "ac1f29ab66cc4b6fa61a756b90cb341f"
+preview_id = "81227e4bd88c447badd80239fbe301eb"
+
+[[kv_namespaces]]
+binding = "LICENSE_CACHE"
+id = "8da030b15a384aa081f896b7749ea98c"
+preview_id = "fee9e49cffd34893b3cafb921b961990"
+
+[vars]
+EXTENSION_ID = "pccongikkjcibhnokhdkliapphficpjg"
+LEMONSQUEEZY_STORE_ID = "373330"
+FREE_DAILY_LIMIT = "10"
+PRO_MINUTE_LIMIT = "10"
+DETECTION_CACHE_TTL_SECONDS = "604800"
+LICENSE_CACHE_TTL_SECONDS = "3600"
+
+# Secrets (wrangler secret put 縺ｧ險ｭ螳・:
+#   wrangler secret put ANTHROPIC_API_KEY
+#   wrangler secret put LEMONSQUEEZY_API_KEY
+#   wrangler secret put LEMONSQUEEZY_WEBHOOK_SECRET
+
+[env.production]
+name = "ai-post-filter-api-production"
+
+[env.staging]
+name = "ai-post-filter-api-staging"
