@@ -18,9 +18,8 @@ function bgError(...args: unknown[]): void {
 export default defineBackground(() => {
   bgLog("background started");
 
-  void warmupMlModel()
-    .then((ok) => bgLog("warmupMlModel:", ok))
-    .catch((e) => bgError("warmupMlModel error:", e));
+  // ローカルMLは無効化（Workers APIで代替）
+  bgLog("local ML disabled, using Workers API instead");
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!msg || typeof msg !== "object") return false;
@@ -111,7 +110,45 @@ export default defineBackground(() => {
       })();
       return true;
     }
-
+    
+    // ===== api/detect =====
+    if (msg.type === "api/detect") {
+      (async () => {
+        const text = msg.payload?.text ?? "";
+        const licenseKey = msg.payload?.licenseKey;
+        bgLog("api/detect REQUEST", {           
+          textLength: text.length,              
+          textPreview: text.slice(0, 50),       
+          hasLicenseKey: !!licenseKey,          
+        });                                     
+        const WORKERS_API_URL = 'https://ai-post-filter-api-production.ai-post-filter-dev.workers.dev/api/detect';
+        try {
+          const response = await fetch(WORKERS_API_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, licenseKey }),
+          });
+          const data = await response.json().catch(() => ({}));
+          const remaining = response.headers.get('X-RateLimit-Remaining');
+          const resetAt = response.headers.get('X-RateLimit-Reset');
+          bgLog("api/detect response", { status: response.status, remaining });
+          sendResponse({
+            ok: response.ok,
+            status: response.status,
+            data,
+            rateLimitInfo: {
+              remaining: remaining ? parseInt(remaining, 10) : null,
+              resetAt: resetAt ? parseInt(resetAt, 10) : null,
+            },
+          });
+        } catch (error) {
+          bgError("api/detect error", error);
+          sendResponse({ ok: false, status: 0, error: 'network_error' });
+        }
+      })();
+      return true;
+    }
+    
     // ===== stats/increment =====
     if (msg.type === "stats/increment") {
       (async () => {

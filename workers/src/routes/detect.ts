@@ -33,6 +33,12 @@ detectRoute.post("/", async (c) => {
     c.req.header("CF-Connecting-IP") ??
     c.req.header("x-forwarded-for") ??
     "unknown";
+    console.log("detect_request_ip", { 
+      cfConnectingIp: c.req.header("CF-Connecting-IP"),
+      xForwardedFor: c.req.header("x-forwarded-for"),
+      finalIp: ip,
+      hasLicenseKey: !!licenseKey,
+    });
 
   if (licenseKey) {
     const licenseInfo = await resolveLicense(c.env, licenseKey);
@@ -45,6 +51,7 @@ detectRoute.post("/", async (c) => {
       licenseKey,
       limit
     );
+    console.log("rate_limit_check", { ip, limit, allowed: rl.allowed, remaining: rl.remaining, resetAt: rl.resetAt });
     if (!rl.allowed) {
       c.header("X-RateLimit-Reset", String(rl.resetAt));
       return c.json({ error: "rate_limited", scope: "license" }, 429);

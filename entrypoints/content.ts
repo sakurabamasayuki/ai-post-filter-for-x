@@ -1,3 +1,4 @@
+import { callDetectApi, getLicenseKeyFromStorage, setRateLimitStatus } from '../src/lib/api-caller';
 import analyzeAccountSignals from '../src/lib/detector/account';
 import analyzeHeuristic from '../src/lib/detector/heuristic';
 import type { HeuristicResult } from '../src/lib/detector/heuristic';
@@ -201,6 +202,80 @@ const updateList = async (
     console.error('[AIPF/list] update failed', e);
   }
 };
+
+// ---------- UI 通知関数 ----------
+
+/**
+ * 無料プラン制限に達した旨の通知を表示
+ */
+function showRateLimitNotification(scope: 'ip' | 'license') {
+  const message =
+    scope === 'ip'
+      ? '本日の無料検出回数に達しました。明日のAM 0:00(UTC)にリセットします。'
+      : 'ライセンスの検出上限に達しました。サポートにお問い合わせください。';
+
+  console.warn('[AIPF/notification]', message);
+  showToast(message, 'error');
+
+  try {
+    void chrome.runtime.sendMessage({
+      type: 'notification/rate-limit',
+      payload: { scope, message },
+    });
+  } catch (e) {
+    console.warn('[AIPF/notification] sendMessage failed', e);
+  }
+}
+
+/**
+ * ライセンスエラー通知
+ */
+function showLicenseErrorNotification() {
+  const message = 'ライセンスキーが無効または期限切れです。';
+  console.warn('[AIPF/notification]', message);
+  showToast(message, 'error');
+
+  try {
+    void chrome.runtime.sendMessage({
+      type: 'notification/license-error',
+      payload: { message },
+    });
+  } catch (e) {
+    console.warn('[AIPF/notification] sendMessage failed', e);
+  }
+}
+
+/**
+ * トースト通知を表示
+ */
+function showToast(message: string, type: 'error' | 'info' | 'success') {
+  if (!document.body) return;
+
+  const toast = document.createElement('div');
+  toast.style.cssText = `
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    padding: 12px 16px;
+    background: ${
+      type === 'error'
+        ? '#d9363e'
+        : type === 'success'
+          ? '#2a8f4f'
+          : '#3498db'
+    };
+    color: #fff;
+    border-radius: 8px;
+    font-size: 13px;
+    z-index: 999999;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    font-family: system-ui, -apple-system, sans-serif;
+  `;
+  toast.textContent = message;
+  document.body.appendChild(toast);
+
+  setTimeout(() => toast.remove(), 4000);
+}
 
 // ---------- スタイル ----------
 const ensureGlobalStyle = () => {
@@ -685,7 +760,7 @@ const showDetailModal = (
   const body = document.createElement('div');
   body.className = 'aipf-modal-body';
 
-    // 最終スコア
+  // 最終スコア
   const finalScoreDiv = document.createElement('div');
   finalScoreDiv.className = 'aipf-final-score';
   finalScoreDiv.innerHTML = `
@@ -699,7 +774,8 @@ const showDetailModal = (
   // スコア分析テーブル
   // ========================================
   const tableDiv = document.createElement('div');
-  tableDiv.innerHTML = '<div class="aipf-signals-title" style="margin-bottom: 12px;">スコア詳細</div>';
+  tableDiv.innerHTML =
+    '<div class="aipf-signals-title" style="margin-bottom: 12px;">スコア詳細</div>';
   tableDiv.style.marginBottom = '20px';
 
   const tableWrapper = document.createElement('div');
@@ -798,10 +874,16 @@ const showDetailModal = (
     body.appendChild(divider1);
 
     const mlCatDiv = document.createElement('div');
-    mlCatDiv.innerHTML = `<div class="aipf-signals-title">MLカテゴリスコア</div>`;
+    mlCatDiv.innerHTML =
+      `<div class="aipf-signals-title">MLカテゴリスコア</div>`;
 
     // 棒グラフを作成する関数
-    const makeBarGraph = (percent, filledChar = '█', emptyChar = '░', totalChars = 17) => {
+    const makeBarGraph = (
+      percent: number,
+      filledChar = '█',
+      emptyChar = '░',
+      totalChars = 17,
+    ) => {
       const filledCount = Math.round((percent / 100) * totalChars);
       const emptyCount = totalChars - filledCount;
       return filledChar.repeat(filledCount) + emptyChar.repeat(emptyCount);
@@ -872,10 +954,32 @@ const showDetailModal = (
       sigItem.setAttribute('data-cat', sig.category);
 
       // カテゴリラベル
-      const categoryInfo = {
-        ai: { label: 'AI生成', color: '#d9363e', bgColor: '#fff5f5', icon: '🤖' },
-        impression: { label: 'インプレ稼ぎ', color: '#b34dd9', bgColor: '#faf5ff', icon: '📈' },
-        human: { label: '人間らしい', color: '#2a8f4f', bgColor: '#f0fdf4', icon: '👤' },
+      const categoryInfo: {
+        [key: string]: {
+          label: string;
+          color: string;
+          bgColor: string;
+          icon: string;
+        };
+      } = {
+        ai: {
+          label: 'AI生成',
+          color: '#d9363e',
+          bgColor: '#fff5f5',
+          icon: '🤖',
+        },
+        impression: {
+          label: 'インプレ稼ぎ',
+          color: '#b34dd9',
+          bgColor: '#faf5ff',
+          icon: '📈',
+        },
+        human: {
+          label: '人間らしい',
+          color: '#2a8f4f',
+          bgColor: '#f0fdf4',
+          icon: '👤',
+        },
       };
 
       const info = categoryInfo[sig.category] || categoryInfo.ai;
@@ -896,7 +1000,8 @@ const showDetailModal = (
         'ai/english-phrases': '「Great question!」など英語フレーズ',
         'impression/urgent': '「今すぐ」「限定」など緊迫感を煽る表現',
         'impression/save': '「保存推奨」「ブクマ必須」など保存を勧める',
-        'impression/unknown': '「99%が知らない」など知識の独占性をアピール',
+        'impression/unknown':
+          '「99%が知らない」など知識の独占性をアピール',
         'impression/fomo': '「知らないと損」など不安を煽る表現',
         'impression/followup': '「フォロー必須」など行動を強要',
         'impression/dm': '「DMで詳細」など別チャネルへの誘導',
@@ -947,24 +1052,28 @@ const showDetailModal = (
     const divider3 = document.createElement('div');
     divider3.className = 'aipf-divider';
     body.appendChild(divider3);
- 
+
     const weightsDiv = document.createElement('div');
-    weightsDiv.innerHTML = `<div class="aipf-signals-title">スコア合成比率</div>`;
- 
+    weightsDiv.innerHTML =
+      `<div class="aipf-signals-title">スコア合成比率</div>`;
+
     const weights = currentSettings.engine.weights;
     const hWeight = weights.heuristic ?? 0.20;
     const aWeight = weights.account ?? 0.15;
     const mWeight = weights.ml ?? 0.65;
- 
+
     // 棒グラフを作成する関数
-    const makeBarGraph = (percent, filledChar = '█', emptyChar = '░', totalChars = 20) => {
+    const makeBarGraph = (
+      percent: number,
+      filledChar = '█',
+      emptyChar = '░',
+      totalChars = 20,
+    ) => {
       const filledCount = Math.round((percent / 100) * totalChars);
       const emptyCount = totalChars - filledCount;
       return filledChar.repeat(filledCount) + emptyChar.repeat(emptyCount);
     };
- 
-    // ★ 修正: 順序を変更（ヒューリスティック → アカウント評価 → 機械学習）
- 
+
     // ヒューリスティック棒
     const hPercent = hWeight * 100;
     const hBar = makeBarGraph(hPercent);
@@ -977,8 +1086,8 @@ const showDetailModal = (
     hWeightRow.style.color = '#3498db';
     hWeightRow.innerHTML = `ヒューリスティック<br>${hBar} ${hPercent.toFixed(0)}%`;
     weightsDiv.appendChild(hWeightRow);
- 
-    // アカウント信号棒（新しい位置）
+
+    // アカウント信号棒
     const aPercent = aWeight * 100;
     const aBar = makeBarGraph(aPercent);
     const aWeightRow = document.createElement('div');
@@ -990,8 +1099,8 @@ const showDetailModal = (
     aWeightRow.style.color = '#2a8f4f';
     aWeightRow.innerHTML = `アカウント評価<br>${aBar} ${aPercent.toFixed(0)}%`;
     weightsDiv.appendChild(aWeightRow);
- 
-    // ML判定棒（最後に移動）
+
+    // ML判定棒
     const mPercent = mWeight * 100;
     const mBar = makeBarGraph(mPercent);
     const mWeightRow = document.createElement('div');
@@ -1003,10 +1112,9 @@ const showDetailModal = (
     mWeightRow.style.color = '#d9363e';
     mWeightRow.innerHTML = `機械学習<br>${mBar} ${mPercent.toFixed(0)}%`;
     weightsDiv.appendChild(mWeightRow);
- 
+
     body.appendChild(weightsDiv);
   }
-
 
   modal.appendChild(body);
   backdrop.appendChild(modal);
@@ -1082,7 +1190,8 @@ const buildTooltipHtml = (
       .slice(0, 4);
 
     topSignals.forEach((s) => {
-      const tag = s.category === 'ai' ? 'AI' : s.category === 'impression' ? 'IMP' : 'HUM';
+      const tag =
+        s.category === 'ai' ? 'AI' : s.category === 'impression' ? 'IMP' : 'HUM';
       const escaped = s.matched.replace(/</g, '&lt;').replace(/>/g, '&gt;');
       html += `<div class="aipf-tooltip-signal">
         <span class="aipf-tooltip-signal-tag" data-cat="${s.category}">${tag}</span>
@@ -1127,7 +1236,7 @@ const mountBadge = (
     <span>${categoryToBadgeText(category)}</span>
     <span class="aipf-badge-score">${(finalScore * 100).toFixed(0)}%</span>
   `;
-  
+
   // バッジクリックでモーダル表示
   badge.style.cursor = 'pointer';
   badge.addEventListener('click', (e) => {
@@ -1135,7 +1244,7 @@ const mountBadge = (
     e.stopPropagation();
     showDetailModal(finalScore, category, mlResult, heuristicResult, accountScore);
   });
-  
+
   group.appendChild(badge);
 
   const tooltip = document.createElement('div');
@@ -1154,7 +1263,9 @@ const mountBadge = (
     wlBtn.type = 'button';
     wlBtn.className = 'aipf-list-btn';
     wlBtn.textContent = isWL ? '✓ WL' : 'WL';
-    wlBtn.title = isWL ? 'ホワイトリストから削除' : 'ホワイトリストに追加';
+    wlBtn.title = isWL
+      ? 'ホワイトリストから削除'
+      : 'ホワイトリストに追加';
     if (isWL) wlBtn.setAttribute('data-active', 'wl');
 
     wlBtn.addEventListener('click', async (e) => {
@@ -1168,7 +1279,9 @@ const mountBadge = (
     blBtn.type = 'button';
     blBtn.className = 'aipf-list-btn';
     blBtn.textContent = isBL ? '✗ BL' : 'BL';
-    blBtn.title = isBL ? 'ブラックリストから削除' : 'ブラックリストに追加';
+    blBtn.title = isBL
+      ? 'ブラックリストから削除'
+      : 'ブラックリストに追加';
     if (isBL) blBtn.setAttribute('data-active', 'bl');
 
     blBtn.addEventListener('click', async (e) => {
@@ -1326,7 +1439,6 @@ export default defineContentScript({
 
     // ========================================
     // 修正版: reapplyAll関数
-    // 既存の reapplyAll を以下に置き換えてください
     // ========================================
 
     const reapplyAll = () => {
@@ -1338,7 +1450,6 @@ export default defineContentScript({
           const heuristicResult = articleHeuristicCache.get(a) ?? null;
           const accountScore = articleAccountScoreCache.get(a) ?? 0.5;
 
-          // ホワイトリスト/ブラックリストは特別扱い(再計算しない)
           const isWL = isHandleInList(h, currentSettings.whitelist);
           const isBL = isHandleInList(h, currentSettings.blacklist);
 
@@ -1352,7 +1463,6 @@ export default defineContentScript({
             finalScore = 0.0;
             finalCategory = 'human';
           } else {
-            // ★ 重要: 現在の重みで再合成
             const heuristicScore = heuristicResult?.finalScore ?? null;
             const mlScore = mlResult?.score ?? null;
             finalScore = composeFinalScore(heuristicScore, mlScore, accountScore);
@@ -1362,7 +1472,6 @@ export default defineContentScript({
               mlResult?.category,
             );
 
-            // 属性も更新(他箇所で参照されるため)
             a.setAttribute('data-aipf-score', finalScore.toFixed(3));
             a.setAttribute('data-aipf-category', finalCategory);
           }
@@ -1442,15 +1551,13 @@ export default defineContentScript({
       return /Reposted|リポスト|Retweeted|リツイート/.test(text);
     };
 
-    // 引用ツイートが含まれているか判定
-    // X(Twitter)では引用元が `[role="link"][tabindex]` の入れ子tweet として表示される
     const hasQuotedTweet = (article: HTMLElement): boolean => {
-      // 引用ツイート部分は通常 `role="link"` で包まれた tweet container を持つ
-      const quoted = article.querySelector('div[role="link"][tabindex] [data-testid="tweetText"]');
+      const quoted = article.querySelector(
+        'div[role="link"][tabindex] [data-testid="tweetText"]',
+      );
       return !!quoted;
     };
 
-    // 投稿のタイプを判定
     const detectPostType = (
       article: HTMLElement,
     ): 'reply' | 'quoted-reply' | 'original' | 'repost' => {
@@ -1462,27 +1569,41 @@ export default defineContentScript({
       return 'original';
     };
 
-    // 現在のページが /<handle>/following か判定
-    const isOnFollowingPage = (): { isFollowing: boolean; ownerHandle?: string } => {
+    const isOnFollowingPage = (): {
+      isFollowing: boolean;
+      ownerHandle?: string;
+    } => {
       const path = location.pathname;
       const m = path.match(/^\/([^/]+)\/following$/);
       if (m) return { isFollowing: true, ownerHandle: '@' + m[1] };
       return { isFollowing: false };
     };
 
-    // 現在のページがプロフィールページか判定 (/<handle> or /<handle>/with_replies等)
-    const isOnProfilePage = (): { isProfile: boolean; handle?: string } => {
+    const isOnProfilePage = (): {
+      isProfile: boolean;
+      handle?: string;
+    } => {
       const path = location.pathname;
-      // /home, /explore, /notifications, /messages, /settings, /i/* などを除外
-      const m = path.match(/^\/([^/]+)(?:\/(?:with_replies|media|likes|highlights|articles))?$/);
+      const m = path.match(
+        /^\/([^/]+)(?:\/(?:with_replies|media|likes|highlights|articles))?$/,
+      );
       if (!m) return { isProfile: false };
-      const reserved = ['home', 'explore', 'notifications', 'messages', 'settings', 'i', 'compose', 'search'];
+      const reserved = [
+        'home',
+        'explore',
+        'notifications',
+        'messages',
+        'settings',
+        'i',
+        'compose',
+        'search',
+      ];
       if (reserved.includes(m[1])) return { isProfile: false };
       return { isProfile: true, handle: '@' + m[1] };
     };
 
     // ========================================
-    // 最終スコア合成: ヒューリスティック + ML + アカウント信号
+    // 最終スコア合成
     // ========================================
     const composeFinalScore = (
       heuristicScore: number | null,
@@ -1490,29 +1611,30 @@ export default defineContentScript({
       accountScore: number,
     ): number => {
       const weights = currentSettings.engine?.weights ?? {};
-      const heuristicEnabled = currentSettings.engine?.heuristicEnabled !== false;
+      const heuristicEnabled =
+        currentSettings.engine?.heuristicEnabled !== false;
       const mlEnabled = currentSettings.engine?.mlEnabled !== false;
       const accountEnabled = currentSettings.engine?.accountEnabled !== false;
-     
+
       const entries: Array<{ score: number; weight: number }> = [];
-     
+
       if (heuristicEnabled && typeof heuristicScore === 'number') {
-        // ★ 修正: 0.35 → 0.20
-        entries.push({ score: heuristicScore, weight: weights.heuristic ?? 0.20 });
+        entries.push({
+          score: heuristicScore,
+          weight: weights.heuristic ?? 0.2,
+        });
       }
       if (mlEnabled && typeof mlScore === 'number') {
-        // ★ 修正: 0.45 → 0.65
         entries.push({ score: mlScore, weight: weights.ml ?? 0.65 });
       }
       if (accountEnabled) {
-        // ★ 修正: 0.2 → 0.15
         entries.push({ score: accountScore, weight: weights.account ?? 0.15 });
       }
-     
+
       if (entries.length === 0) {
         return 0.5;
       }
-     
+
       const totalWeight = entries.reduce(
         (s, e) => s + Math.max(0, e.weight),
         0,
@@ -1520,7 +1642,7 @@ export default defineContentScript({
       if (totalWeight <= 0) {
         return entries.reduce((s, e) => s + e.score, 0) / entries.length;
       }
-     
+
       return (
         entries.reduce((s, e) => s + e.score * Math.max(0, e.weight), 0) /
         totalWeight
@@ -1528,26 +1650,32 @@ export default defineContentScript({
     };
 
     // ========================================
-    // 最終カテゴリ判定: ヒューリスティック優先、次にML
+    // 最終カテゴリ判定
     // ========================================
     const decideFinalCategory = (
       finalScore: number,
       heuristicResult: HeuristicResult | null,
       mlCategory: MlCategory | undefined,
     ): MlCategory => {
-      // ヒューリスティックが明確に判定していればそれを最優先
-      if (heuristicResult && heuristicResult.category !== 'mixed' && heuristicResult.signals.length >= 2) {
+      if (
+        heuristicResult &&
+        heuristicResult.category !== 'mixed' &&
+        heuristicResult.signals.length >= 2
+      ) {
         return heuristicResult.category;
       }
-      // 次にML
       if (mlCategory && mlCategory !== 'mixed') {
         return mlCategory;
       }
-      // フォールバック: スコアから推定
       if (finalScore >= 0.7) return 'ai';
       if (finalScore >= 0.5) return 'mixed';
       return 'human';
     };
+
+// =====================================================
+// 【修正版】processArticle 関数
+// 既存の processArticle 関数全体を、これで置き換えてください
+// =====================================================
 
     const processArticle = async (article: HTMLElement) => {
       if (seen.has(article)) return;
@@ -1574,47 +1702,56 @@ export default defineContentScript({
       const isWL = isHandleInList(handle, currentSettings.whitelist);
       const isBL = isHandleInList(handle, currentSettings.blacklist);
 
+      // ========================================
+      // BLマッチ: APIを呼ばないのでカウントしない
+      // ========================================
       if (isBL) {
         article.setAttribute(PROCESSED_ATTR, '1');
         article.setAttribute('data-aipf-score', '1.000');
         article.setAttribute('data-aipf-category', 'ai');
         if (handle) article.setAttribute('data-aipf-handle', handle);
-        applyViewToArticle(article, 1.0, 'ai', null, null, 1.0, handle, currentSettings);
-
-        try {
-          void chrome.runtime.sendMessage({
-            type: 'stats/increment',
-            payload: { checked: true, hidden: true },
-          });
-        } catch (e) {
-          console.warn('[AIPF/stats] increment failed', e);
-        }
+        applyViewToArticle(
+          article,
+          1.0,
+          'ai',
+          null,
+          null,
+          1.0,
+          handle,
+          currentSettings,
+        );
+        // ⭐ BLマッチはAPIを呼ばないのでstatsカウントしない
         return;
       }
 
+      // ========================================
+      // WLマッチ: APIを呼ばないのでカウントしない
+      // ========================================
       if (isWL) {
         article.setAttribute(PROCESSED_ATTR, '1');
         article.setAttribute('data-aipf-score', '0.000');
         article.setAttribute('data-aipf-category', 'human');
         if (handle) article.setAttribute('data-aipf-handle', handle);
-        applyViewToArticle(article, 0.0, 'human', null, null, 0.0, handle, currentSettings);
-
-        try {
-          void chrome.runtime.sendMessage({
-            type: 'stats/increment',
-            payload: { checked: true, hidden: false },
-          });
-        } catch (e) {
-          console.warn('[AIPF/stats] increment failed', e);
-        }
+        applyViewToArticle(
+          article,
+          0.0,
+          'human',
+          null,
+          null,
+          0.0,
+          handle,
+          currentSettings,
+        );
+        // ⭐ WLマッチはAPIを呼ばないのでstatsカウントしない
         return;
       }
 
       // ========================================
-      // 1. ヒューリスティック (即座に実行・最速)
+      // 1. ヒューリスティック
       // ========================================
       let heuristicResult: HeuristicResult | null = null;
-      const heuristicEnabled = currentSettings.engine?.heuristicEnabled !== false;
+      const heuristicEnabled =
+        currentSettings.engine?.heuristicEnabled !== false;
       if (heuristicEnabled && hasText) {
         try {
           heuristicResult = analyzeHeuristic(text);
@@ -1623,7 +1760,9 @@ export default defineContentScript({
             score: heuristicResult.finalScore,
             category: heuristicResult.category,
             signalCount: heuristicResult.signals.length,
-            topSignals: heuristicResult.signals.slice(0, 3).map((s) => s.rule),
+            topSignals: heuristicResult.signals
+              .slice(0, 3)
+              .map((s) => s.rule),
           });
         } catch (e) {
           console.warn('[AIPF/heuristic] failed', e);
@@ -1631,15 +1770,13 @@ export default defineContentScript({
       }
 
       // ========================================
-      // 2. アカウント信号 (拡張: プロフィール情報を読み込み)
+      // 2. アカウント信号
       // ========================================
-      // 観察データを記録(fire-and-forget)
       if (handle) {
         const postType = detectPostType(article);
         void recordPostObservation(handle, postType);
       }
 
-      // キャッシュされたプロフィール情報を取得
       const cachedProfile = handle ? await getUserProfile(handle) : null;
 
       const accountResult = analyzeAccountSignals({
@@ -1648,7 +1785,6 @@ export default defineContentScript({
         recentPostTextSample: text,
         isReply: isReplyPost(article),
         isRepost: isRepostPost(article),
-        // 拡張: プロフィール情報
         profile: cachedProfile
           ? {
               bioText: cachedProfile.bioText,
@@ -1658,7 +1794,6 @@ export default defineContentScript({
               isFollowingByMe: cachedProfile.isFollowingByMe,
             }
           : undefined,
-        // 拡張: 直近活動データ
         recentActivity: cachedProfile
           ? {
               replyCountLast1h: calcReplyCountWithinHours(cachedProfile, 1),
@@ -1683,42 +1818,107 @@ export default defineContentScript({
       });
 
       // ========================================
-      // 3. ML 推論
+      // 3. Workers API呼び出し（ライセンス検証+カウント）
       // ========================================
       let mlScore: number | null = null;
       let mlResult: MlResult | null = null;
+      let apiResult: Awaited<ReturnType<typeof callDetectApi>> | null = null;
 
       const mlEnabled = currentSettings.engine?.mlEnabled !== false;
 
       if (mlEnabled && hasText && postId) {
-        try {
-          const response = (await chrome.runtime.sendMessage({
-            type: 'ml/infer',
-            payload: { postId, text },
-          })) as unknown;
+        const licenseKey = getLicenseKeyFromStorage();
+        apiResult = await callDetectApi(text, licenseKey);
 
-          const res = response as { result?: MlResult };
-          if (res?.result) {
-            mlResult = res.result;
-            mlScore = typeof mlResult.score === 'number' ? mlResult.score : null;
+        if (!apiResult.success) {
+          if (apiResult.error === 'rate_limited') {
+            // ★ 制限に達した場合
+            const info = apiResult.rateLimitInfo;
+            if (info) {
+              setRateLimitStatus(info.remaining, info.resetAt);
+
+              console.warn('[AIPF/rate-limit]', {
+                scope: info.scope,
+                remaining: info.remaining,
+                resetAtMs: info.resetAt,
+                hourUntilReset: Math.ceil(
+                  (info.resetAt - Date.now()) / 3600000,
+                ),
+              });
+
+              showRateLimitNotification(info.scope);
+            }
+
+            // 制限に達したため ML 推論をスキップ
+            mlScore = null;
+            mlResult = null;
+          } else if (apiResult.error === 'invalid_license') {
+            console.warn('[AIPF/license] invalid or expired', { licenseKey });
+            showLicenseErrorNotification();
+            mlScore = null;
+            mlResult = null;
+          } else {
+            // その他のネットワークエラー → background.ts の ML 推論にフォールバック
+            console.warn('[AIPF/api] error:', apiResult.error);
           }
-        } catch (error) {
-          console.error('[AIPF/ml] error', { postId, error });
+        } else {
+          // API が成功した場合、レート制限情報を更新
+          if (apiResult.rateLimitInfo) {
+            setRateLimitStatus(
+              apiResult.rateLimitInfo.remaining,
+              apiResult.rateLimitInfo.resetAt,
+            );
+          }
+
+          console.log('[AIPF/api] detect success', {
+            score: apiResult.data?.score,
+            cached: apiResult.data?.cached,
+          });
         }
 
-        console.log('[AIPF/ml]', {
-          postId,
-          mlScore,
-          mlCategory: mlResult?.category,
-        });
+        // 制限に達していない場合のみ background.ts への ML 推論を続行
+        if (apiResult.error !== 'rate_limited') {
+          try {
+            const response = (await chrome.runtime.sendMessage({
+              type: 'ml/infer',
+              payload: { postId, text },
+            })) as unknown;
+
+            const res = response as { result?: MlResult };
+            if (res?.result) {
+              mlResult = res.result;
+              mlScore = typeof mlResult.score === 'number'
+                ? mlResult.score
+                : null;
+            }
+          } catch (error) {
+            console.error('[AIPF/ml] error', { postId, error });
+          }
+
+          console.log('[AIPF/ml]', {
+            postId,
+            mlScore,
+            mlCategory: mlResult?.category,
+          });
+        } else {
+          console.log('[AIPF/ml] skipped (rate limited)');
+        }
       }
 
       // ========================================
       // 4. 合成
       // ========================================
       const heuristicScore = heuristicResult?.finalScore ?? null;
-      const finalScore = composeFinalScore(heuristicScore, mlScore, effectiveAccountScore);
-      const finalCategory = decideFinalCategory(finalScore, heuristicResult, mlResult?.category);
+      const finalScore = composeFinalScore(
+        heuristicScore,
+        mlScore,
+        effectiveAccountScore,
+      );
+      const finalCategory = decideFinalCategory(
+        finalScore,
+        heuristicResult,
+        mlResult?.category,
+      );
 
       article.setAttribute(PROCESSED_ATTR, '1');
       article.setAttribute('data-aipf-score', finalScore.toFixed(3));
@@ -1728,6 +1928,12 @@ export default defineContentScript({
       if (mlResult) articleMlCache.set(article, mlResult);
       if (heuristicResult) articleHeuristicCache.set(article, heuristicResult);
       articleAccountScoreCache.set(article, effectiveAccountScore);
+
+      // ⭐ API制限中はラベル付けをスキップ
+      if (apiResult?.error === 'rate_limited') {
+        console.log('[AIPF/final] skipped (rate limited)', { postId, handle });
+        return;
+      }
 
       applyViewToArticle(
         article,
@@ -1757,12 +1963,14 @@ export default defineContentScript({
         (currentSettings.viewMode === 'hide' ||
           currentSettings.viewMode === 'blur');
 
+      // ⭐ Workers APIを成功した時だけカウント
+      const apiSuccess = apiResult?.success === true;
       try {
         void chrome.runtime.sendMessage({
           type: 'stats/increment',
           payload: {
-            checked: true,
-            hidden: willHide,
+            checked: apiSuccess,
+            hidden: apiSuccess && willHide,
           },
         });
       } catch (e) {
@@ -1771,13 +1979,12 @@ export default defineContentScript({
     };
 
     // ========================================
-    // フォローページ観察: /<handle>/following にいる時、表示中のユーザーをフォロー集合に登録
+    // フォローページ観察
     // ========================================
     const observeFollowingPage = () => {
       const { isFollowing } = isOnFollowingPage();
       if (!isFollowing) return;
 
-      // フォロー一覧の各ユーザーカードを走査
       const userCells = document.querySelectorAll<HTMLElement>(
         '[data-testid="UserCell"]',
       );
@@ -1785,7 +1992,6 @@ export default defineContentScript({
         if (cell.hasAttribute('data-aipf-following-observed')) return;
         cell.setAttribute('data-aipf-following-observed', '1');
 
-        // セル内のハンドル抽出
         const spans = cell.querySelectorAll<HTMLSpanElement>('span');
         for (const s of Array.from(spans)) {
           const t = s.textContent?.trim();
@@ -1799,13 +2005,12 @@ export default defineContentScript({
     };
 
     // ========================================
-    // プロフィールページ観察: フォロー数/フォロワー数/bioをキャッシュに保存
+    // プロフィールページ観察
     // ========================================
     const observeProfilePage = () => {
       const { isProfile, handle } = isOnProfilePage();
       if (!isProfile || !handle) return;
 
-      // プロフィールヘッダーのコンテナ
       const header = document.querySelector<HTMLElement>(
         '[data-testid="UserName"]',
       )?.closest('div[data-testid="primaryColumn"]') as HTMLElement | null;
@@ -1829,7 +2034,6 @@ export default defineContentScript({
       articles.forEach((a) => {
         void processArticle(a);
       });
-      // ページ種別に応じた観察
       observeFollowingPage();
       observeProfilePage();
     };

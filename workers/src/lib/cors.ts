@@ -3,16 +3,20 @@ import type { Bindings } from "../types";
 
 /**
  * 拡張機能 ID 限定の CORS ミドルウェア。
+ * Chrome 拡張からのリクエストのみを許可
  */
 export const extensionOnlyCors = (): MiddlewareHandler<{
   Bindings: Bindings;
 }> => {
   return async (c: Context<{ Bindings: Bindings }>, next) => {
     const origin = c.req.header("Origin") ?? "";
-    const allowed = `chrome-extension://${c.env.EXTENSION_ID}`;
-
+    
+    // ⭐ あなたの拡張機能 ID を直接設定
+    const EXTENSION_ID = "fhjejcelpgodkmofkpgghonalepmdpld";
+    const allowed = `chrome-extension://${EXTENSION_ID}`;
     const isAllowed = origin === allowed;
 
+    // OPTIONS リクエスト（プリフライト）の処理
     if (c.req.method === "OPTIONS") {
       if (!isAllowed) {
         return c.text("Forbidden", 403);
@@ -36,12 +40,12 @@ export const extensionOnlyCors = (): MiddlewareHandler<{
       return;
     }
 
+    // それ以外は拡張機能からのリクエストのみ許可
     if (!isAllowed) {
       return c.json({ error: "forbidden_origin" }, 403);
     }
 
     await next();
-
     c.header("Access-Control-Allow-Origin", origin);
     c.header("Vary", "Origin");
   };
