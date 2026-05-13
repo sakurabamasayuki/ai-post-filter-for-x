@@ -17,3 +17,7 @@ Thumbs.db
 !.vscode/settings.json
 
 .idea
+
+# Cloudflare Workers
+.dev.vars
+workers/.dev.vars
