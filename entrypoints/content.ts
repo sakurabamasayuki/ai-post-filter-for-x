@@ -865,8 +865,10 @@ const showDetailModal = (
   tableDiv.appendChild(tableWrapper);
   body.appendChild(tableDiv);
 
+// ⭐ showDetailModal 関数内の「ML カテゴリスコア」セクションを以下に置き換えてください
+
   // ========================================
-  // ML カテゴリスコア(棒グラフ + ASCII)
+  // ML カテゴリスコア(リッチな棒グラフ)
   // ========================================
   if (mlResult?.categoryScores) {
     const divider1 = document.createElement('div');
@@ -877,56 +879,99 @@ const showDetailModal = (
     mlCatDiv.innerHTML =
       `<div class="aipf-signals-title">MLカテゴリスコア</div>`;
 
-    // 棒グラフを作成する関数
-    const makeBarGraph = (
-      percent: number,
-      filledChar = '█',
-      emptyChar = '░',
-      totalChars = 17,
-    ) => {
-      const filledCount = Math.round((percent / 100) * totalChars);
-      const emptyCount = totalChars - filledCount;
-      return filledChar.repeat(filledCount) + emptyChar.repeat(emptyCount);
-    };
+    const cs = mlResult.categoryScores;
 
-    // AI
-    const aiPercent = mlResult.categoryScores.ai * 100;
-    const aiBar = makeBarGraph(aiPercent);
-    const aiRow = document.createElement('div');
-    aiRow.style.marginBottom = '12px';
-    aiRow.style.fontFamily = 'monospace';
-    aiRow.style.fontSize = '13px';
-    aiRow.style.fontWeight = '700';
-    aiRow.style.lineHeight = '1.8';
-    aiRow.style.color = '#d9363e';
-    aiRow.innerHTML = `AI<br>${aiBar} ${aiPercent.toFixed(1)}%`;
-    mlCatDiv.appendChild(aiRow);
+    // カテゴリ定義
+    const categories = [
+      {
+        label: 'AI生成',
+        icon: '🤖',
+        score: cs.ai,
+        color: '#d9363e',
+        gradient: 'linear-gradient(90deg, #d9363e 0%, #ff6b6b 100%)',
+        bgLight: '#fff5f5',
+      },
+      {
+        label: 'インプレ稼ぎ',
+        icon: '📈',
+        score: cs.impression,
+        color: '#b34dd9',
+        gradient: 'linear-gradient(90deg, #b34dd9 0%, #d676e8 100%)',
+        bgLight: '#faf5ff',
+      },
+      {
+        label: '人間らしい',
+        icon: '👤',
+        score: cs.human,
+        color: '#2a8f4f',
+        gradient: 'linear-gradient(90deg, #2a8f4f 0%, #4ade80 100%)',
+        bgLight: '#f0fdf4',
+      },
+    ];
 
-    // インプレ
-    const impPercent = mlResult.categoryScores.impression * 100;
-    const impBar = makeBarGraph(impPercent);
-    const impRow = document.createElement('div');
-    impRow.style.marginBottom = '12px';
-    impRow.style.fontFamily = 'monospace';
-    impRow.style.fontSize = '13px';
-    impRow.style.fontWeight = '700';
-    impRow.style.lineHeight = '1.8';
-    impRow.style.color = '#b34dd9';
-    impRow.innerHTML = `インプレ<br>${impBar} ${impPercent.toFixed(1)}%`;
-    mlCatDiv.appendChild(impRow);
+    // 最大値を見つけて強調
+    const maxScore = Math.max(cs.ai, cs.impression, cs.human);
 
-    // 人間
-    const humPercent = mlResult.categoryScores.human * 100;
-    const humBar = makeBarGraph(humPercent);
-    const humRow = document.createElement('div');
-    humRow.style.marginBottom = '0';
-    humRow.style.fontFamily = 'monospace';
-    humRow.style.fontSize = '13px';
-    humRow.style.fontWeight = '700';
-    humRow.style.lineHeight = '1.8';
-    humRow.style.color = '#2a8f4f';
-    humRow.innerHTML = `人間<br>${humBar} ${humPercent.toFixed(1)}%`;
-    mlCatDiv.appendChild(humRow);
+    categories.forEach((cat) => {
+      const isMax = cat.score === maxScore;
+      const percent = cat.score * 100;
+
+      const row = document.createElement('div');
+      row.style.cssText = `
+        margin-bottom: 14px;
+        padding: 10px 12px;
+        background: ${isMax ? cat.bgLight : '#fafafa'};
+        border-radius: 10px;
+        border: ${isMax ? `2px solid ${cat.color}` : '1px solid #e1e8ed'};
+        transition: all 0.2s ease;
+      `;
+
+      // ヘッダー(アイコン + ラベル + パーセント)
+      row.innerHTML = `
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 20px;">${cat.icon}</span>
+            <span style="font-weight: 700; color: ${cat.color}; font-size: 14px;">${cat.label}</span>
+            ${isMax ? `<span style="background: ${cat.color}; color: #fff; padding: 2px 8px; border-radius: 99px; font-size: 10px; font-weight: 700;">TOP</span>` : ''}
+          </div>
+          <div style="font-weight: 700; color: ${cat.color}; font-size: 18px;">
+            ${percent.toFixed(1)}%
+          </div>
+        </div>
+
+        <!-- 進捗バー本体 -->
+        <div style="position: relative; height: 12px; background: #e5e7eb; border-radius: 999px; overflow: hidden; box-shadow: inset 0 1px 2px rgba(0,0,0,0.08);">
+          <div style="
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 100%;
+            width: ${percent}%;
+            background: ${cat.gradient};
+            border-radius: 999px;
+            transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 0 8px ${cat.color}66;
+          "></div>
+
+          <!-- アニメーション用ハイライト -->
+          <div style="
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 100%;
+            width: ${percent}%;
+            background: linear-gradient(90deg,
+              transparent 0%,
+              rgba(255,255,255,0.3) 50%,
+              transparent 100%
+            );
+            border-radius: 999px;
+          "></div>
+        </div>
+      `;
+
+      mlCatDiv.appendChild(row);
+    });
 
     body.appendChild(mlCatDiv);
   }
@@ -1817,6 +1862,9 @@ export default defineContentScript({
         hasProfile: !!cachedProfile,
       });
 
+// ⭐ この部分だけ修正(processArticle関数内の「3. Workers API呼び出し」セクション)
+// 既存のコードを以下に置き換えてください
+
       // ========================================
       // 3. Workers API呼び出し（ライセンス検証+カウント）
       // ========================================
@@ -1862,7 +1910,7 @@ export default defineContentScript({
             console.warn('[AIPF/api] error:', apiResult.error);
           }
         } else {
-          // API が成功した場合、レート制限情報を更新
+          // ⭐ API が成功した場合、レスポンスから mlResult を構築
           if (apiResult.rateLimitInfo) {
             setRateLimitStatus(
               apiResult.rateLimitInfo.remaining,
@@ -1873,11 +1921,44 @@ export default defineContentScript({
           console.log('[AIPF/api] detect success', {
             score: apiResult.data?.score,
             cached: apiResult.data?.cached,
+            categoryScores: (apiResult.data as any)?.categoryScores,
           });
+
+          // ⭐ Workers API のレスポンスを mlResult に変換
+          if (apiResult.data && typeof apiResult.data.score === 'number') {
+            mlScore = apiResult.data.score;
+            const cs = (apiResult.data as any).categoryScores as
+              | { ai: number; impression: number; human: number }
+              | undefined;
+
+            // categoryScores からカテゴリを決定
+            const category: MlCategory = cs
+              ? cs.ai >= cs.impression && cs.ai >= cs.human
+                ? 'ai'
+                : cs.impression >= cs.human
+                  ? 'impression'
+                  : 'human'
+              : mlScore >= 0.7
+                ? 'ai'
+                : mlScore >= 0.5
+                  ? 'mixed'
+                  : 'human';
+
+            mlResult = {
+              score: mlScore,
+              category,
+              categoryScores: cs,
+            };
+          }
         }
 
-        // 制限に達していない場合のみ background.ts への ML 推論を続行
-        if (apiResult.error !== 'rate_limited') {
+        // ⭐ ローカルML推論は Workers API でカバーされているため、フォールバックのみ
+        // 失敗した場合のみローカルML呼び出し
+        if (
+          apiResult.error !== 'rate_limited' &&
+          !mlResult &&
+          !apiResult.success
+        ) {
           try {
             const response = (await chrome.runtime.sendMessage({
               type: 'ml/infer',
@@ -1894,15 +1975,14 @@ export default defineContentScript({
           } catch (error) {
             console.error('[AIPF/ml] error', { postId, error });
           }
-
-          console.log('[AIPF/ml]', {
-            postId,
-            mlScore,
-            mlCategory: mlResult?.category,
-          });
-        } else {
-          console.log('[AIPF/ml] skipped (rate limited)');
         }
+
+        console.log('[AIPF/ml]', {
+          postId,
+          mlScore,
+          mlCategory: mlResult?.category,
+          source: apiResult.success ? 'workers-api' : 'local-fallback',
+        });
       }
 
       // ========================================

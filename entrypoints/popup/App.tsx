@@ -270,8 +270,14 @@ export default function App() {
     <div className="w-[440px] min-h-[560px] bg-background text-foreground p-4 space-y-4">
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center justify-between">
-            <span>AI Post Filter for X</span>
+          <CardTitle className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span>AI Post Filter for X</span>
+              {/* ⭐ Beta バッジ */}
+              <span className="bg-yellow-500/20 text-yellow-300 text-xs px-2 py-1 rounded-full font-semibold">
+                Beta
+              </span>
+            </div>
             <span
               className={
                 "text-xs px-2 py-1 rounded-full " +
@@ -286,11 +292,19 @@ export default function App() {
         </CardHeader>
 
         <CardContent className="space-y-4">
+          {/* ⭐ β版では統計情報を非表示 */}
+          {/*
           <div className="grid grid-cols-2 gap-3">
             <StatCard title="今日のチェック数" value={stats.checkedToday} />
             <StatCard title="今日の非表示数" value={stats.hiddenToday} />
             <StatCard title="累計チェック数" value={stats.checkedTotal} />
             <StatCard title="累計非表示数" value={stats.hiddenTotal} />
+          </div>
+          */}
+
+          {/* ⭐ 統計の代わりにステータスメッセージを表示 */}
+          <div className="text-sm text-muted-foreground text-center py-3">
+            🔍 AI判定システムが稼働中...
           </div>
 
           <SettingsSection
@@ -313,7 +327,7 @@ export default function App() {
           </Button>
 
           <div className="text-xs text-muted-foreground text-center pt-2">
-            v0.1.0 ・{" "}
+            v0.1.0 Beta ・{" "}
             <a
               href="https://example.com/feedback"
               target="_blank"

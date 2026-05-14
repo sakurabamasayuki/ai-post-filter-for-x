@@ -46,10 +46,13 @@ export function LicenseInput({ licenseKey, onSave }: Props): JSX.Element {
     text: string;
   } | null>(null);
 
+  // ⭐ Beta版では Coming Soon としてロック
+  const COMING_SOON = true;
+
   // 初回 + licenseKey 変更時にキャッシュから読み込み
   useEffect(() => {
     setInput(licenseKey);
-    if (licenseKey.trim()) {
+    if (licenseKey.trim() && !COMING_SOON) {
       void validateLicense(licenseKey).then(setStatus);
     } else {
       setStatus(null);
@@ -133,6 +136,59 @@ export function LicenseInput({ licenseKey, onSave }: Props): JSX.Element {
   const remainingDays = status ? daysUntilExpiry(status) : null;
   const proActive = status?.valid && status.plan === "pro" && !expired;
 
+  // ⭐ Coming Soon の場合は別UIを返す
+  if (COMING_SOON) {
+    return (
+      <Card className="relative overflow-hidden">
+        <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px] z-10 flex items-center justify-center pointer-events-none">
+          <div className="text-center">
+            <div className="bg-yellow-500/90 text-black px-4 py-2 rounded-full font-bold text-sm shadow-lg">
+              🚧 Coming Soon
+            </div>
+            <p className="text-white text-xs mt-2 opacity-80">
+              Pro版は近日公開予定です
+            </p>
+          </div>
+        </div>
+
+        <div className="opacity-40 pointer-events-none select-none">
+          <CardHeader>
+            <CardTitle className="text-sm flex items-center gap-2">
+              ライセンスキー
+            </CardTitle>
+            <CardDescription>
+              有料版のライセンスキーを入力して機能を有効化します
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex gap-2">
+              <Input
+                value=""
+                placeholder="XXXX-XXXX-XXXX-XXXX"
+                className="flex-1 font-mono text-xs"
+                disabled
+                readOnly
+              />
+              <Button disabled size="sm">
+                保存
+              </Button>
+            </div>
+
+            <div className="pt-2 border-t">
+              <Button
+                disabled
+                className="w-full bg-gradient-to-r from-orange-500 to-amber-500 text-white opacity-50"
+              >
+                ✨ Pro版を購入(月額500円〜)
+              </Button>
+            </div>
+          </CardContent>
+        </div>
+      </Card>
+    );
+  }
+
+  // 通常版(本リリース後)
   return (
     <Card>
       <CardHeader>

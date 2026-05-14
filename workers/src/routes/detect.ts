@@ -20,25 +20,24 @@ export const detectRoute = new Hono<{ Bindings: Bindings }>();
 detectRoute.post("/", async (c) => {
   const body = await c.req.json().catch(() => null);
   const parsed = DetectSchema.safeParse(body);
-
   if (!parsed.success) {
     return c.json(
       { error: "invalid_request", details: parsed.error.flatten() },
       400
     );
   }
-
   const { text, licenseKey } = parsed.data;
   const ip =
     c.req.header("CF-Connecting-IP") ??
     c.req.header("x-forwarded-for") ??
     "unknown";
-    console.log("detect_request_ip", { 
-      cfConnectingIp: c.req.header("CF-Connecting-IP"),
-      xForwardedFor: c.req.header("x-forwarded-for"),
-      finalIp: ip,
-      hasLicenseKey: !!licenseKey,
-    });
+
+  console.log("detect_request_ip", {
+    cfConnectingIp: c.req.header("CF-Connecting-IP"),
+    xForwardedFor: c.req.header("x-forwarded-for"),
+    finalIp: ip,
+    hasLicenseKey: !!licenseKey,
+  });
 
   if (licenseKey) {
     const licenseInfo = await resolveLicense(c.env, licenseKey);
@@ -51,7 +50,13 @@ detectRoute.post("/", async (c) => {
       licenseKey,
       limit
     );
-    console.log("rate_limit_check", { ip, limit, allowed: rl.allowed, remaining: rl.remaining, resetAt: rl.resetAt });
+    console.log("rate_limit_check", {
+      ip,
+      limit,
+      allowed: rl.allowed,
+      remaining: rl.remaining,
+      resetAt: rl.resetAt,
+    });
     if (!rl.allowed) {
       c.header("X-RateLimit-Reset", String(rl.resetAt));
       return c.json({ error: "rate_limited", scope: "license" }, 429);
@@ -84,16 +89,17 @@ detectRoute.post("/", async (c) => {
     return c.json({ error: "upstream_failure" }, 502);
   }
 
+  // ⭐ categoryScores も含める
   const result: DetectionResult = {
     score: judgement.score,
     reasoning: judgement.reasoning,
+    categoryScores: judgement.categoryScores,
     cached: false,
   };
 
   const ttl =
     parseInt(c.env.DETECTION_CACHE_TTL_SECONDS, 10) || 60 * 60 * 24 * 7;
   await kvPutJson(c.env.DETECTION_CACHE, cacheKey, result, ttl);
-
   return c.json(result);
 });
 
@@ -104,13 +110,11 @@ async function resolveLicense(
   const cacheKey = `license:${licenseKey}`;
   const cached = await kvGetJson<LicenseInfo>(env.LICENSE_CACHE, cacheKey);
   if (cached) return cached;
-
   const result = await validateLicense(
     env.LEMONSQUEEZY_API_KEY,
     licenseKey,
     env.LEMONSQUEEZY_STORE_ID
   );
-
   const ttl = parseInt(env.LICENSE_CACHE_TTL_SECONDS, 10) || 3600;
   await kvPutJson(env.LICENSE_CACHE, cacheKey, result, ttl);
   return result;
